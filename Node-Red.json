@@ -1,0 +1,410 @@
+[
+    {
+        "id": "6eda4d83.af2cf4",
+        "type": "tab",
+        "label": "Lueftung",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "b2948387.1fef1",
+        "type": "openhab2-in",
+        "z": "6eda4d83.af2cf4",
+        "name": "Außentemperatur",
+        "controller": "339113ae.efed5c",
+        "itemname": "Temp_Outside",
+        "x": 120,
+        "y": 180,
+        "wires": [
+            [
+                "c57e7d5f.6053b",
+                "1c991c0c.ddc554"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "70fde9db.14c598",
+        "type": "debug",
+        "z": "6eda4d83.af2cf4",
+        "name": "",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "x": 1130,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "46b961f4.8153b",
+        "type": "openhab2-in",
+        "z": "6eda4d83.af2cf4",
+        "name": "Innentemperatur",
+        "controller": "339113ae.efed5c",
+        "itemname": "outgoingAirTemperature",
+        "x": 120,
+        "y": 240,
+        "wires": [
+            [
+                "d29831bf.571a"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "ba3eba20.e57d58",
+        "type": "openhab2-get",
+        "z": "6eda4d83.af2cf4",
+        "name": "Innentemperatur",
+        "controller": "339113ae.efed5c",
+        "itemname": "outgoingAirTemperature",
+        "x": 540,
+        "y": 60,
+        "wires": [
+            []
+        ],
+        "outputLabels": [
+            "payload.state"
+        ]
+    },
+    {
+        "id": "1c991c0c.ddc554",
+        "type": "function",
+        "z": "6eda4d83.af2cf4",
+        "name": "Store OutdoorTemp",
+        "func": "flow.set('outdoorTemp', msg.payload);\n// flow.outdoorTemp = msg.payload;",
+        "outputs": 0,
+        "noerr": 0,
+        "x": 350,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "c57e7d5f.6053b",
+        "type": "switch",
+        "z": "6eda4d83.af2cf4",
+        "name": "Luft kalt?",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "lte",
+                "v": "25",
+                "vt": "num"
+            },
+            {
+                "t": "gt",
+                "v": "25",
+                "vt": "num"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 320,
+        "y": 180,
+        "wires": [
+            [
+                "ba3eba20.e57d58",
+                "6b5cb5fb.7bea5c"
+            ],
+            [
+                "fcadb02f.dce74",
+                "e7c7ceec.7f4bb"
+            ]
+        ]
+    },
+    {
+        "id": "fcadb02f.dce74",
+        "type": "function",
+        "z": "6eda4d83.af2cf4",
+        "name": "Set Off",
+        "func": "flow.set('setOn', false);\nreturn [ null ];",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 570,
+        "y": 260,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "d29831bf.571a",
+        "type": "function",
+        "z": "6eda4d83.af2cf4",
+        "name": "Store IndoorTemp",
+        "func": "flow.set('indoorTemp', msg.payload);",
+        "outputs": 0,
+        "noerr": 0,
+        "x": 330,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "96177437.de0378",
+        "type": "openhab2-in",
+        "z": "6eda4d83.af2cf4",
+        "name": "AirLevelPercent",
+        "controller": "339113ae.efed5c",
+        "itemname": "airLevelPercent",
+        "x": 120,
+        "y": 300,
+        "wires": [
+            [
+                "1326df64.5a92f1"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "1326df64.5a92f1",
+        "type": "function",
+        "z": "6eda4d83.af2cf4",
+        "name": "Store AirLevel",
+        "func": "flow.set('airLevelPercent', msg.payload);",
+        "outputs": 0,
+        "noerr": 0,
+        "x": 320,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "e7c7ceec.7f4bb",
+        "type": "switch",
+        "z": "6eda4d83.af2cf4",
+        "name": "Air Ventilation On?",
+        "property": "airLevelPercent",
+        "propertyType": "flow",
+        "rules": [
+            {
+                "t": "gt",
+                "v": "0",
+                "vt": "num"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 1,
+        "x": 710,
+        "y": 200,
+        "wires": [
+            [
+                "d4579c60.371a8"
+            ]
+        ],
+        "outputLabels": [
+            "0"
+        ]
+    },
+    {
+        "id": "d4579c60.371a8",
+        "type": "openhab2-out",
+        "z": "6eda4d83.af2cf4",
+        "name": "0 % Lüftung",
+        "controller": "339113ae.efed5c",
+        "itemname": "airLevelPercent",
+        "topic": "ItemUpdate",
+        "payload": "0",
+        "x": 970,
+        "y": 200,
+        "wires": [
+            [
+                "70fde9db.14c598"
+            ]
+        ]
+    },
+    {
+        "id": "6b5cb5fb.7bea5c",
+        "type": "switch",
+        "z": "6eda4d83.af2cf4",
+        "name": "Air Ventilation Off?",
+        "property": "airLevelPercent",
+        "propertyType": "flow",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "0",
+                "vt": "num"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 1,
+        "x": 710,
+        "y": 140,
+        "wires": [
+            [
+                "d25675e1.279b58"
+            ]
+        ],
+        "outputLabels": [
+            "0"
+        ]
+    },
+    {
+        "id": "d25675e1.279b58",
+        "type": "openhab2-out",
+        "z": "6eda4d83.af2cf4",
+        "name": "60 % Lüftung",
+        "controller": "339113ae.efed5c",
+        "itemname": "airLevelPercent",
+        "topic": "ItemUpdate",
+        "payload": "60",
+        "x": 970,
+        "y": 140,
+        "wires": [
+            [
+                "70fde9db.14c598"
+            ]
+        ]
+    },
+    {
+        "id": "b1ae5b54.a51e58",
+        "type": "bigtimer",
+        "z": "6eda4d83.af2cf4",
+        "outtopic": "",
+        "outpayload1": "",
+        "outpayload2": "",
+        "name": "Night Mode",
+        "comment": "",
+        "lat": "51.7847682",
+        "lon": "6.1194800",
+        "starttime": "1380",
+        "endtime": "600",
+        "starttime2": 0,
+        "endtime2": 0,
+        "startoff": 0,
+        "endoff": 0,
+        "offs": 0,
+        "outtext1": "",
+        "outtext2": "",
+        "timeout": 1440,
+        "sun": true,
+        "mon": true,
+        "tue": true,
+        "wed": true,
+        "thu": true,
+        "fri": true,
+        "sat": true,
+        "jan": true,
+        "feb": true,
+        "mar": true,
+        "apr": true,
+        "may": true,
+        "jun": true,
+        "jul": true,
+        "aug": true,
+        "sep": true,
+        "oct": true,
+        "nov": true,
+        "dec": true,
+        "day1": 0,
+        "month1": 0,
+        "day2": 0,
+        "month2": 0,
+        "day3": 0,
+        "month3": 0,
+        "day4": 0,
+        "month4": 0,
+        "day5": 0,
+        "month5": 0,
+        "day6": 0,
+        "month6": 0,
+        "d1": 0,
+        "w1": 0,
+        "d2": 0,
+        "w2": 0,
+        "d3": 0,
+        "w3": 0,
+        "d4": 0,
+        "w4": 0,
+        "d5": 0,
+        "w5": 0,
+        "d6": 0,
+        "w6": 0,
+        "xday1": 0,
+        "xmonth1": 0,
+        "xday2": 0,
+        "xmonth2": 0,
+        "xday3": 0,
+        "xmonth3": 0,
+        "xday4": 0,
+        "xmonth4": 0,
+        "xday5": 0,
+        "xmonth5": 0,
+        "xday6": 0,
+        "xmonth6": 0,
+        "xd1": 0,
+        "xw1": 0,
+        "xd2": 0,
+        "xw2": 0,
+        "xd3": 0,
+        "xw3": 0,
+        "xd4": 0,
+        "xw4": 0,
+        "xd5": 0,
+        "xw5": 0,
+        "xd6": 0,
+        "xw6": 0,
+        "suspend": false,
+        "random": false,
+        "repeat": true,
+        "atstart": true,
+        "odd": false,
+        "even": false,
+        "x": 550,
+        "y": 380,
+        "wires": [
+            [
+                "f452ed04.9b465"
+            ],
+            [
+                "f452ed04.9b465"
+            ],
+            [
+                "f452ed04.9b465"
+            ]
+        ]
+    },
+    {
+        "id": "f452ed04.9b465",
+        "type": "switch",
+        "z": "6eda4d83.af2cf4",
+        "name": "Night?",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "1",
+                "vt": "num"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 740,
+        "y": 400,
+        "wires": [
+            [],
+            []
+        ]
+    },
+    {
+        "id": "339113ae.efed5c",
+        "type": "openhab2-controller",
+        "z": "",
+        "name": "Openhab Server",
+        "protocol": "http",
+        "host": "localhost",
+        "port": "8080",
+        "path": "",
+        "username": "",
+        "password": ""
+    }
+]
