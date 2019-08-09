@@ -10,14 +10,15 @@ from openhab import openHAB
 oh_host = 'localhost'
 base_url = 'http://{oh_host}:8080/rest'.format(oh_host=oh_host)
 logDir = '/var/log/ventilation-system'
+uniqueData = {}
 
 outsiteTemp = 0.0
 lastUpdateOutsiteTemp = datetime.datetime.now()
 lastOtherData = []
-fan1 = 0
-fan2 = 0
-fan3 = 0
-fan4 = 0
+temp1 = 0
+temp2 = 0
+temp3 = 0
+temp4 = 0
 
 masterAdr = [0x01, 0x01]
 myAdr = [0x01, 0x02]
@@ -146,6 +147,9 @@ def temp2Hex(temp):
 def hex2Temp(value):
     return (value / 2) - 20
 
+def extractTemp(b):
+    return (b[3] << 8 | b[2]) / 10.0
+
 def temp2Hex2(temp):
     return int((temp+0x80)*2)
 
@@ -223,10 +227,10 @@ def readNovus():
 
 def consumePackage(data, recursion=0):
     global lastOtherData
-    global fan1
-    global fan2
-    global fan3
-    global fan4
+    global temp1
+    global temp2
+    global temp3
+    global temp4
     # hexstr = '{time:%Y-%m-%d %H:%M:%S.%f} L={len:02d}: {hex}'.format(time=datetime.datetime.now(), len=len(reading), hex=' '.join(binascii.hexlify(x) for x in reading))
     #print(type(reading))
 
@@ -266,7 +270,9 @@ def consumePackage(data, recursion=0):
                     # data = data[6+int(hex(data[3]), 16):]
                     data = data[6+expectedDataLength(data):]
     #            hexstr = 'CRC: {crc} L={len:02d}: {hex}'.format(crc=valid, time=datetime.datetime.now(), len=len(data), hex=' '.join('{:02x}'.format(x) for x in data))
-    hexstr = 'CRC: {crc} L={len:02d}: {hex}'.format(crc=valid, time=datetime.datetime.now(), len=len(data), hex=' '.join('{:02x}'.format(x) for x in data))
+    hexstr = 'L={len:02d}: {hex}'.format(time=datetime.datetime.now(), len=len(data), hex=' '.join('{:02x}'.format(x) for x in data))
+    # logUniqueData(data, hexstr)
+    hexstr = 'CRC: {} {}'.format(valid, hexstr)
     #hexstr = 'CRC: {crc} L={len:02d}: {hex}'.format(crc=valid, time=datetime.datetime.now(), len=len(data), hex=' '.join(binascii.hexlify(x) for x in reading))
     if not valid:
         if len(data) > 0:
@@ -274,9 +280,11 @@ def consumePackage(data, recursion=0):
     elif not isCommand(data[2]):
         hexstr = 'Found new command! ' + hexstr
         print(hexstr)
-    elif not data[1] in [0x00, 0x01, 0x04, 0x08, 0x09, 0xff]:
+    elif not data[1] in [0x00, 0x01, 0x04, 0x05, 0x08, 0x09, 0xff]:
         hexstr = 'Found new address! ' + hexstr
         print(hexstr)
+    elif data[0] == 0 and data[1] == 0 and data[2] == Command.STATUS.value:
+        hexstr += ' --> ' + extractTime(data)
 
     if len(data) > 6 and outsiteTemp > 0.0:
         t = [temp2Hex(outsiteTemp), temp2Hex(outsiteTemp-0.5), temp2Hex(outsiteTemp-1), temp2Hex(outsiteTemp-1.5), temp2Hex(outsiteTemp-2)]
@@ -330,19 +338,32 @@ def consumePackage(data, recursion=0):
         lastOtherData = data[6:]
 
     if len(data) == 25 and data[2] == Command.GET_SET.value:
-        fan = extractFanLevel(data, 0x81, 9)
-        if fan > 0 and fan != fan1:
-            fan1 = setFanLevel(1, fan)
-        fan = extractFanLevel(data, 0x82, 13)
-        if fan > 0 and fan != fan2:
-            hexstr += ' Temp Out: {0} -- {1}'.format(fan, outsiteTemp)
-            fan2 = setFanLevel(2, fan)
-        fan = extractFanLevel(data, 0x83, 17)
-        if fan > 0 and fan != fan3:
-            fan3 = setFanLevel(3, fan)
-        fan = extractFanLevel(data, 0x84, 21)
-        if fan > 0 and fan != fan4:
-            fan4 = setFanLevel(4, fan)
+        temp = extractTemp(data[9:13])
+        if temp > 0 and temp != temp1:
+            temp1 = setTemp('novus300_TempIndoor', temp)
+        temp = extractTemp(data[13:17])
+        if temp > 0 and temp != temp2:
+            temp2 = setTemp('novus300_TempHouseAirOut', temp)
+        temp = extractTemp(data[17:21])
+        if temp > 0 and temp != temp3:
+            temp3 = setTemp('novus300_TempOutdoor', temp)
+        temp = extractTemp(data[21:25])
+        if temp > 0 and temp != temp4:
+            temp4 = setTemp('novus300_TempIndoorIn', temp)
+        # fan = extractFanLevel(data, 0x81, 9)
+        # if fan > 0 and fan != fan1:
+        #     hexstr += ' Temp Out: {0} -- {1}'.format(fan, outsiteTemp)
+        #     fan1 = setFanLevel(2, fan)
+        # fan = extractFanLevel(data, 0x82, 13)
+        # if fan > 0 and fan != fan2:
+        #     hexstr += ' Temp Out: {0} -- {1}'.format(fan, outsiteTemp)
+        #     fan2 = setFanLevel(2, fan)
+        # fan = extractFanLevel(data, 0x83, 17)
+        # if fan > 0 and fan != fan3:
+        #     fan3 = setFanLevel(3, fan)
+        # fan = extractFanLevel(data, 0x84, 21)
+        # if fan > 0 and fan != fan4:
+        #     fan4 = setFanLevel(4, fan)
     elif len(data) == 12 and (' '.join('{:02x}'.format(x) for x in data)).startswith('01 00 85 06'):
     #if len(data) == 12 and (' '.join(binascii.hexlify(x) for x in reading)).startswith('01 00 85 06'):
         # value = str(int(codecs.encode(reading[-1], 'hex'), 16))
@@ -351,9 +372,61 @@ def consumePackage(data, recursion=0):
         setAirLevel(value)
         #setAirLevel(str(int.from_bytes(reading[-1])))
 
+    logUniqueData(data, hexstr)
     log.debug(hexstr)
 
     return True
+
+def logUniqueData(data, hexstr):
+    dataStart = 6
+    # if data[2] != Command.OTHER.value or data[3] != 0x83:
+    #     return
+    if len(data) <= 6 or data[2] == Command.STATUS.value:
+        return
+    if data[2] == Command.GET_SET.value:
+        if data[dataStart] == 0x55:
+            return
+        # if data[dataStart] in [0x08, 0x1a, 0x90, 0x1d, 0x55]:
+        dataStart = 7
+        if len(data) == 25: # and data[9] == 0x81 and data[13] == 0x82 and data[17] == 0x83 and data[21] == 0x84:
+            # print(data[9:13])
+            # hexstr += '81: {0}; 82: {1}; 83: {2}; 84: {3}'.format(data[9:12]) #, hex2Temp3(data[13:16]), hex2Temp3(data[17:20]), 0) #, hex2Temp3(data[21:24]))
+           hexstr += ' Temp: 81: {0}; 82: {1}; 83: {2}; 84: {3}'.format(extractTemp(data[9:13]), extractTemp(data[13:17]), extractTemp(data[17:21]), extractTemp(data[21:25]))
+
+    
+    key = keyStart = 'L={:02d}: '.format(len(data))
+    dataStr = ''
+    for i, byte in enumerate(data):
+        if i < 6:
+            keyStart += '{:02x} '.format(byte)
+        if i in [4, 5]:
+            continue
+        if i < dataStart:
+            key += '{:02x} '.format(byte)
+        else:
+            dataStr += '{:02x} '.format(byte)
+    if key in uniqueData:
+        if uniqueData[key] == dataStr:
+            return
+    logExt.debug(hexstr)
+    if key in uniqueData and data[2] != Command.STATUS.value:
+        hexstr2 = ' ' * (hexstr.find(keyStart) + len('L={:02d}: '.format(len(data))) + (len(data) * 3) - len(dataStr))
+        # hexstr2 = ' ' * (len(hexstr) - len(dataStr) + 1)
+        dataBytesPrev = uniqueData[key].rstrip(' ').split(' ')
+        dataBytes = dataStr.rstrip(' ').split(' ')
+        for i in range(0, max(len(dataBytesPrev), len(dataBytes))):
+            if i >= len(dataBytesPrev):
+                break
+            byte = dataBytesPrev[i]
+            if i < len(dataBytes) and dataBytes[i] == byte:
+                byte = '  ' # '__'
+            hexstr2 += '{} '.format(byte)    
+        logExt.debug(hexstr2) # + ' --> ' + keyStart + ' Len: ' + str(len(data) * 3) + ' Len(dataStr): ' + str(len(dataStr)))
+    uniqueData[key] = dataStr
+
+def extractTime(data):
+    weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    return '{0} {1}.{2}.{3} {4}:{5}:{6}'.format(weekDays[data[8]], data[9], data[10], data[11], data[16], data[15], data[14])
 
 def extractFanLevel(data, fanId, dataPos):
     if data[dataPos] != fanId:
@@ -365,6 +438,10 @@ def extractFanLevel(data, fanId, dataPos):
 def setAirLevel(level):
     # start_new_thread(setItemValue,('novus300_Level', level,))
     setItemValue(item='novus300_Level', value=level)
+
+def setTemp(itemId, temp):
+    setItemValue(item=itemId, value=temp)
+    return temp
 
 def setFanLevel(fanId, level):
     temp = ((level / 90 * 7) if level>0 else 0) + 28
@@ -387,13 +464,13 @@ def setItemValue(item, value):
     #item.state = value
 
     # user = 'openhab'
-    # password = 'e512a496a7d58a36bb64e31a12e298d6'
+    # password = '...'
     # command = 'smarthome:update'
     #os.spawnlp(os.P_NOWAIT, '$OPENHAB_RUNTIME/bin/client', '-u', user, '-p', password, command, item, value)
     # os.system('{pathruntime}/bin/client -u {user} -p {password} {command} {item} {value}'.format(pathruntime=os.environ.get('OPENHAB_RUNTIME', '/usr/share/openhab2/runtime'), user=user, password=password, command=command, item=item, value=value))
 
 log = createLogger(os.path.join(logDir, 'novus300.log'), 'novus')
-# logExt = createLogger(os.path.join(logDir, 'novus300_ext.log'), 'novusExt')
+logExt = createLogger(os.path.join(logDir, 'novus300_ext.log'), 'novusExt')
 
 # 
 ser = serial.Serial(port, baudrate=baud, timeout=0
