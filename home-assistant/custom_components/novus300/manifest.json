@@ -1,0 +1,9 @@
+{
+  "domain": "novus300",
+  "name": "Paul Novus 300",
+  "documentation": "https://github.com/Schack17/PaulFocusNovus/tree/master/home-assistant/custom_components/novus300",
+  "dependencies": [],
+  "after_dependencies": ["http"],
+  "codeowners": ["https://github.com/Schack17"],
+  "requirements": ["tinkerforge>=2.1.24"]
+}
