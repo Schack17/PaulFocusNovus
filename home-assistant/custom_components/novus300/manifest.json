@@ -1,0 +1,10 @@
+{
+  "domain": "novus300",
+  "name": "Paul Novus 300",
+  "version": "2021.03.17",
+  "documentation": "https://www.home-assistant.io/components/novus300",
+  "dependencies": [],
+  "after_dependencies": ["http"],
+  "codeowners": ["@schack17"],
+  "requirements": ["pyserial>=3.4", "pyserial-asyncio>=0.4"]
+}
