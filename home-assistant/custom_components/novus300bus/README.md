@@ -2,7 +2,7 @@ This is a custom component for home assistant.
 It allows read the temperatures from the Paul Novus 300 air ventilation.
 To connect the air ventilation it uses a serial RS-485 USB Adapter.
 
-* To use it copy the folder novus300 and all sub folders and files into your home assistant config sub folder "custom_components".
+* To use it copy the folder novus300bus and all sub folders and files into your home assistant config sub folder "custom_components".
 * Extend your home assistant seonsors.yaml with:
 
 ```
