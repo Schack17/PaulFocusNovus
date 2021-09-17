@@ -1,4 +1,5 @@
 """Support for reading data from a serial port."""
+# region Imports
 import codecs
 # import json
 import logging
@@ -9,10 +10,16 @@ import homeassistant.helpers.config_validation as cv
 import serial
 import voluptuous as vol
 from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
 
+# endregion Imports
+
+# region Constants
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SERIAL_PORT = "serial_port"
@@ -30,9 +37,11 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     }
 )
+# endregion Constants
 
 
 class Command(Enum):
+    # Date and time
     STATUS = 0x0
     BROADCAST_REQUEST = 0x80
     BROADCAST_ANSWER = 0x81
@@ -44,19 +53,36 @@ class Command(Enum):
     OTHER = 0x87
 
 
-def async_setup_platform(hass, config, async_add_entities, discovery_info=None, entities=None):
+class SubCommand(Enum):
+    SET_LANGUAGE = 0x06
+    SET_FAN_SPEED = 0x08
+    TIME_LEFT_TO_FILTER_REPLACEMENT = 0x09
+    # 26 9 - 1
+    BYPASS = 0x1A
+    OPERATING_HOURS = 0x26
+    TEMPERATURES = 0x44
+    # 0x90 144 9 - 1
+    # 0x1D 29  9 - 1
+    # 0x55 85 10 - 2
+
+
+async def async_setup_platform(hass: HomeAssistant, config: ConfigType, async_add_entities: AddEntitiesCallback, discovery_info: DiscoveryInfoType = None):  # | None
     """Set up the Serial sensor platform."""
     name = config.get(CONF_NAME) or DEFAULT_NAME
     port = config.get(CONF_SERIAL_PORT)
     baudrate = config.get(CONF_BAUDRATE) or DEFAULT_BAUDRATE
 
+    # bypass_state = NovusTempSensor( hass, "bypass_state", "Zuluft Temperatur Räume")
     indoor_in = NovusTempSensor(hass, "indoor_in", "Zuluft Temperatur Räume")
     outdoor = NovusTempSensor(hass, "outdoor", "Außentemperatur Lüftung")
     house_air_out = NovusTempSensor(
         hass, "house_air_out", "Abluft Temperatur Haus")
-    entities += [NovusTempSensor(hass, "indoor", name, port, baudrate,
-                                 indoor_in, outdoor, house_air_out), indoor_in, outdoor, house_air_out]
+    indoor = NovusTempSensor(hass, "indoor", name, port,
+                             baudrate, indoor_in, outdoor, house_air_out)
+    entities = [indoor, indoor_in, outdoor, house_air_out]
     async_add_entities(entities, True)
+
+# region Helper Functions
 
 
 def getDataLength(reading):
@@ -120,13 +146,34 @@ def extractTemp(b):
         temp -= (256 - b[3]) * 25.6
     else:
         temp += b[3] * 25.6
-    # # Org:    temp = (b[3] << 8 | b[2]) / 10.0
+    # Org:    temp = (b[3] << 8 | b[2]) / 10.0
     _LOGGER.debug(
         "Valid temp %s - raw data: '%s'",
         temp,
         b,
     )
     return temp
+
+
+#  01 00  85  03 04   65  1a 00  1d
+#  [1, 0, 133, 3, 4, 101, 26, 0, 29]
+# Extract Bypass state           ^
+# e.g. 29 / 1d --> 1d = 1 = True
+# e.g. 13 / 0d --> 0d = 0 = False
+def extractBypass(data):
+    try:
+        return int(format(data[2], '02x')[0]) == 1
+    except:
+        pass
+    return False
+
+
+def extractDefroster(data):
+    try:
+        return format(data[2], '02x')[1]
+    except:
+        pass
+    return 'unknown'
 
 
 def getCommandId(reading):
@@ -137,14 +184,24 @@ def getCommandId(reading):
     return 0
 
 
+def asHex(data):
+    try:
+        return ''.join('{:02x}'.format(x) for x in data)
+    except:
+        pass
+    return ''
+# endregion Helper Functions
+
+
 class NovusTempSensor(Entity):
     """Representation of a Serial sensor."""
 
-    def __init__(self, hass, id, name, port=None, baudrate=None, indoor_in=None, outdoor=None, house_air_out=None):
+    def __init__(self, hass, id, name, port=None, baudrate=None, indoor_in=None, outdoor=None, house_air_out=None, bypass=None):
         """Initialize the Serial sensor."""
         self._indoor_in = indoor_in
         self._outdoor = outdoor
         self._house_air_out = house_air_out
+        self._bypass = bypass
         self.entity_id = "sensor.novus300_temp_" + id
         self._hass = hass
         self._name = name
@@ -223,20 +280,58 @@ class NovusTempSensor(Entity):
                     #    break
                     #    pass
 
-        if len(data) == 25 and data[2] == Command.GET_SET.value:
-            temp = extractTemp(data[9:13])
+        return self.__process_command(data)
+
+    def __process_command(self, raw_data):
+        if len(raw_data) < 9:
+            return None
+        cmd = raw_data[2]
+        sub_cmd = raw_data[6]
+        length = raw_data[3]
+        data = raw_data[6:]
+
+        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.TEMPERATURES.value and len(raw_data) == 25:
+            temp = extractTemp(raw_data[9:13])
             if temp > 0 and temp != self._indoor_in.state:
                 self._indoor_in.setState(round(temp, 1))
-            temp = extractTemp(data[13:17])
+            temp = extractTemp(raw_data[13:17])
             if temp < 100 and temp != self._outdoor.state:
                 self._outdoor.setState(round(temp, 1))
-            temp = extractTemp(data[17:21])
+            temp = extractTemp(raw_data[17:21])
             if temp > 0 and temp != self._tempIndoor:
                 self._state = self._tempIndoor = round(temp, 1)
-            temp = extractTemp(data[21:25])
+            temp = extractTemp(raw_data[21:25])
             if temp > 0 and temp != self._house_air_out.state:
                 self._house_air_out.setState(round(temp, 1))
             return True
+
+        if length == 32 or len(data):
+            _LOGGER.warning("Time left to filter replacement? %s - %s - %s",
+                            sub_cmd, asHex(raw_data), raw_data)
+
+            # and len(raw_data) > 11:
+        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.BYPASS.value:
+            try:
+                bypass = extractBypass(data)
+                if bypass != self._bypass:
+                    self._bypass = bypass
+                    _LOGGER.warning("bypass state change: open? %s - %s - %s",
+                                    bypass, asHex(raw_data), raw_data)
+                # self._hass.states.set(
+                #     "binary_sensor.novus300_bypass", extractBypass(data))
+            except:
+                pass
+
+            # _LOGGER.warning("bypass state: %s", raw_data[10])
+            # _LOGGER.warning("defroster state: %s", raw_data[11])
+        elif cmd == Command.GET_SET.value and sub_cmd == SubCommand.TIME_LEFT_TO_FILTER_REPLACEMENT.value:
+            if len(data) > 25:
+                _LOGGER.warning(
+                    "Time left to filter replacement: %s - %s", asHex(data[23:27]), data[23:27])
+        elif cmd == Command.GET_SET.value:
+            _LOGGER.warning(
+                "sub_cmd: %s %s - len(raw_data): %s, len(data): %s - data: %s", asHex(sub_cmd), sub_cmd, len(raw_data), len(data), asHex(raw_data))
+
         # elif len(data) == 12 and (' '.join('{:02x}'.format(x) for x in data)).startswith('01 00 85 06'):
         #     value = str(data[-1])
         #     print(value)

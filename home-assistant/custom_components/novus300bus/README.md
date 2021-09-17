@@ -12,3 +12,10 @@ To connect the air ventilation it uses a serial RS-485 USB Adapter.
   # baudrate: 9600
   # name: ...
 ```
+
+Todo:
+
+* Cleanup code - move read function into global part
+* Remove hardcoded sensors and read them as config
+* Add bypass state as sensor
+* Add filter time as sensor
