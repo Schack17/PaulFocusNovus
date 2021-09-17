@@ -6,7 +6,7 @@ To connect the air ventilation it uses a serial RS-485 USB Adapter.
 * Extend your home assistant seonsors.yaml with:
 
 ```
-- platform: novus300
+- platform: novus300bus
   serial_port: /dev/ttyUSB0
   # optional:
   # baudrate: 9600
