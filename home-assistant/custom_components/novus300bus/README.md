@@ -15,7 +15,6 @@ To connect the air ventilation it uses a serial RS-485 USB Adapter.
 
 Todo:
 
-* Cleanup code - move read function into global part
 * Remove hardcoded sensors and read them as config
 * Add filter time as sensor
 * Add project to hacs

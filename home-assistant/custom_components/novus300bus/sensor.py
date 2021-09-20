@@ -6,7 +6,6 @@ from datetime import timedelta
 from enum import Enum
 
 import homeassistant.helpers.config_validation as cv
-import serial
 import voluptuous as vol
 from homeassistant.components.binary_sensor import (DEVICE_CLASS_PLUG,
                                                     BinarySensorEntity)
@@ -18,6 +17,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
+from serial import EIGHTBITS, PARITY_MARK, STOPBITS_ONE, Serial
 
 # endregion Imports
 
@@ -31,6 +31,13 @@ DEFAULT_NAME = "Innentemperatur (Abluft)"
 DEFAULT_BAUDRATE = 9600
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
+
+SENSOR_HEAT_RECOVERY = 'heat_recovery'
+SENSOR_DEFROSTER = 'defroster'
+SENSOR_INDOOR = 'indoor'
+SENSOR_INDOOR_IN = 'indoor_in'
+SENSOR_OUTDOOR = 'outdoor'
+SENSOR_HOUSE_AIR_OUT = 'house_air_out'
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -74,24 +81,161 @@ async def async_setup_platform(hass: HomeAssistant, config: ConfigType, async_ad
     port = config.get(CONF_SERIAL_PORT)
     baudrate = config.get(CONF_BAUDRATE) or DEFAULT_BAUDRATE
 
-    heat_recovery = NovusBinarySensor(
-        hass, "heat_recovery", "Wärme Rück Gewinnung")
-    indoor_in = NovusTempSensor(
-        hass, "indoor_in", "Zuluft Temperatur Räume", "mdi:air-purifier")
-    outdoor = NovusTempSensor(
-        hass, "outdoor", "Außentemperatur Lüftung", "mdi:home-import-outline")
-    house_air_out = NovusTempSensor(
-        hass, "house_air_out", "Abluft Temperatur Haus")
-    indoor = NovusTempSensor(hass, "indoor", name, "mdi:home-thermometer", port,
-                             baudrate, indoor_in, outdoor, house_air_out, heat_recovery)
-    sensors: dict[str, Entity] = {
-        'heat_recovery': heat_recovery,
-        'indoor': indoor,
-        'indoor_in': indoor_in,
-        'outdoor': outdoor,
-        'house_air_out': house_air_out
+    sensors: dict[str, NovusSensorInterface] = {
+        SENSOR_HEAT_RECOVERY: NovusBinarySensor(hass, SENSOR_HEAT_RECOVERY, "Wärme Rück Gewinnung"),
+        SENSOR_DEFROSTER: NovusSensor(hass, SENSOR_DEFROSTER, "Defroster"),
+        SENSOR_INDOOR: NovusTempSensor(hass, SENSOR_INDOOR, "Innentemperatur (Abluft)", "mdi:home-thermometer"),
+        SENSOR_INDOOR_IN: NovusTempSensor(hass, SENSOR_INDOOR_IN, "Zuluft Temperatur Räume", "mdi:air-purifier"),
+        SENSOR_OUTDOOR: NovusTempSensor(hass, SENSOR_OUTDOOR, "Außentemperatur Lüftung", "mdi:home-import-outline"),
+        SENSOR_HOUSE_AIR_OUT: NovusTempSensor(
+            hass, SENSOR_HOUSE_AIR_OUT, "Abluft Temperatur Haus")
     }
+
+    async def serial_read(device, rate, **kwargs):
+        """Read the data from the port."""
+        reader = Serial(device, baudrate=rate, **kwargs)
+        count = 0
+        lastdata = None
+        result = None
+        while result != True:
+            line = ''
+            try:
+                line = reader.readline()
+                count += 1
+                if not line or len(line) <= 0:
+                    continue
+                if lastdata:
+                    line = lastdata + line
+                    lastdata = None
+                if len(line) < 6:
+                    lastdata = line
+                    continue
+                elif line and getDataLength(line) > len(line)-6 and (getCommandId(line) != 87 or len(line) == 32):
+                    lastdata = line
+                    continue
+                data = []
+                if line and len(line) > 0:
+                    for x in line:
+                        data.append(x)
+                    result = consumePackage(data)
+                    if result == False:
+                        lastdata = line
+            except ValueError:
+                _LOGGER.error("ValueError: %s", line)
+                pass
+        reader.close()
+
+    def consumePackage(data, recursion=0):
+        if recursion > 10:
+            return None
+        if expectedDataLength(data) + 6 > len(data):
+            return False
+        valid = False
+        lastdata = []
+        while not valid and len(data) >= 6 and lastdata != data:
+            lastdata = data
+            valid = validate(data)
+            if not valid and len(data) >= 6:
+                if len(data) >= 20 and data[0] == 0x00 and data[1] == 0x00 and data[2] == 0x00 and data[3] == 0x03:
+                    consumePackage(data[0:6+14], recursion=recursion+1)
+                    data = data[6+14:]
+                elif data[2] in [item.value for item in Command] and data[2] != Command.STATUS.value:
+                    consumePackage(
+                        data[0:6+expectedDataLength(data)], recursion=recursion+1)
+                    data = data[6+expectedDataLength(data):]
+                else:
+                    # try:
+                    while not isCommand(data[2]):
+                        data = data[1:]
+                        if len(data) < 2:
+                            break
+                    if data[2] != Command.OTHER.value:
+                        if isCommand(data[2]):
+                            consumePackage(
+                                data[0:6+expectedDataLength(data)], recursion=recursion+1)
+                        data = data[6+expectedDataLength(data):]
+                    # except:
+                    #    break
+                    #    pass
+
+        return process_command(data)
+
+    def process_command(raw_data):
+        if len(raw_data) < 9:
+            return None
+        cmd = raw_data[2]
+        sub_cmd = raw_data[6]
+        length = raw_data[3]
+        data = raw_data[6:]
+
+        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.TEMPERATURES.value and len(raw_data) == 25:
+            set_temp_value(SENSOR_INDOOR_IN, extractTemp(raw_data[9:13]))
+            set_temp_value(SENSOR_OUTDOOR, extractTemp(raw_data[13:17]), False)
+            set_temp_value(SENSOR_INDOOR, extractTemp(raw_data[17:21]))
+            set_temp_value(SENSOR_HOUSE_AIR_OUT, extractTemp(raw_data[21:25]))
+            return True
+
+        if length == 32 or len(data):
+            _LOGGER.warning("Time left to filter replacement? %s - %s - %s",
+                            sub_cmd, asHex(raw_data), raw_data)
+
+            # and len(raw_data) > 11:
+        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.BYPASS.value:
+            try:
+                heat_recovery = not extractBypass(data)
+                if heat_recovery != get_sensor_value(SENSOR_HEAT_RECOVERY):
+                    set_sensor_value(SENSOR_HEAT_RECOVERY, heat_recovery)
+                    _LOGGER.warning("bypass state change: open? %s - %s - %s",
+                                    not heat_recovery, asHex(raw_data), raw_data)
+                defroster = extractDefroster(data)
+                if defroster != get_sensor_value(SENSOR_DEFROSTER):
+                    set_sensor_value(SENSOR_DEFROSTER, defroster)
+            except:
+                pass
+        elif cmd == Command.GET_SET.value and sub_cmd == SubCommand.TIME_LEFT_TO_FILTER_REPLACEMENT.value:
+            if len(data) > 25:
+                _LOGGER.warning(
+                    "Time left to filter replacement: %s - %s", asHex(data[23:27]), data[23:27])
+        elif cmd == Command.GET_SET.value:
+            _LOGGER.warning(
+                "sub_cmd: %s %s - len(raw_data): %s, len(data): %s - data: %s", asHex(sub_cmd), sub_cmd, len(raw_data), len(data), asHex(raw_data))
+
+        # elif len(data) == 12 and (' '.join('{:02x}'.format(x) for x in data)).startswith('01 00 85 06'):
+        #     value = str(data[-1])
+        #     print(value)
+        #     setAirLevel(value)
+        return None
+
+    def get_sensor_value(name):
+        if not name in sensors:
+            return None
+        return sensors[name].state
+
+    def set_sensor_value(name, value):
+        if not name in sensors:
+            return
+        sensors[name].setState(value)
+
+    def set_temp_value(name, temp, tempOverNull=True):
+        _LOGGER.warning('set_temp_value name: %s - temp: %s', name, temp)
+        if not tempOverNull and temp <= 0:
+            return
+        elif tempOverNull and temp >= 100:
+            return
+        elif not name in sensors:
+            return
+        elif temp == get_sensor_value(name):
+            return
+        _LOGGER.warning('set_sensor_value name: %s - temp: %s',
+                        name, round(temp, 1))
+        set_sensor_value(name, round(temp, 1))
+
     async_add_entities(sensors.values(), True)
+
+    if port is None:
+        return
+    await serial_read(port, baudrate, timeout=0, stopbits=STOPBITS_ONE, parity=PARITY_MARK, bytesize=EIGHTBITS, rtscts=False, dsrdtr=False)
+
 
 # region Helper Functions
 
@@ -204,7 +348,15 @@ def asHex(data):
 # endregion Helper Functions
 
 
-class NovusBinarySensor(BinarySensorEntity):
+class NovusSensorInterface:
+    def setState(self, newState):
+        pass
+
+    def state(self):
+        pass
+
+
+class NovusBinarySensor(BinarySensorEntity, NovusSensorInterface):
     """Representation of a Binary sensor."""
 
     def __init__(self, hass, id, friendly_name):
@@ -230,156 +382,15 @@ class NovusBinarySensor(BinarySensorEntity):
         self._is_on = newState
 
 
-class NovusTempSensor(SensorEntity):
-    """Representation of a Serial sensor."""
-
-    def __init__(self, hass, id, friendly_name, icon='hass:thermometer', port=None, baudrate=None, indoor_in=None, outdoor=None, house_air_out=None, heat_recovery=None):
-        """Initialize the Serial sensor."""
-        self._indoor_in = indoor_in
-        self._outdoor = outdoor
-        self._house_air_out = house_air_out
-        self._heat_recovery = heat_recovery
-
+class NovusSensor(SensorEntity, NovusSensorInterface):
+    def __init__(self, hass, id, friendly_name):
         self._hass = hass
-        self._port = port
-        self._baudrate = baudrate
-        self._serial_loop_task = None
-
-        self._attr_unique_id = self._attr_name = "novus300_temp_" + id
+        self._attr_unique_id = self._attr_name = "novus300_" + id
         self._name = friendly_name
-        self._attr_icon = icon
-        self._state = self._tempIndoor = None
-        self._attr_should_poll = True  # self._port is not None
-        self._attr_device_class = DEVICE_CLASS_TEMPERATURE
-        self._attr_unit_of_measurement = TEMP_CELSIUS
-
-    async def serial_read(self, device, rate, **kwargs):
-        """Read the data from the port."""
-        _LOGGER.debug("serial_read start: %s", self._attr_unique_id)
-        reader = serial.Serial(device, baudrate=rate, **kwargs)
-        count = 0
-        lastdata = None
-        result = None
-        while result != True:
-            line = ''
-            try:
-                line = reader.readline()
-                count += 1
-                if not line or len(line) <= 0:
-                    continue
-                if lastdata:
-                    line = lastdata + line
-                    lastdata = None
-                if len(line) < 6:
-                    lastdata = line
-                    continue
-                elif line and getDataLength(line) > len(line)-6 and (getCommandId(line) != 87 or len(line) == 32):
-                    lastdata = line
-                    continue
-                data = []
-                if line and len(line) > 0:
-                    for x in line:
-                        data.append(x)
-                    result = self.consumePackage(data)
-                    if result == False:
-                        lastdata = line
-            except ValueError:
-                _LOGGER.error("ValueError: %s", line)
-                pass
-        reader.close()
-        _LOGGER.debug("serial_read end: %s", self._attr_unique_id)
-
-    def consumePackage(self, data, recursion=0):
-        if recursion > 10:
-            return None
-        if expectedDataLength(data) + 6 > len(data):
-            return False
-        valid = False
-        lastdata = []
-        while not valid and len(data) >= 6 and lastdata != data:
-            lastdata = data
-            valid = validate(data)
-            if not valid and len(data) >= 6:
-                if len(data) >= 20 and data[0] == 0x00 and data[1] == 0x00 and data[2] == 0x00 and data[3] == 0x03:
-                    self.consumePackage(data[0:6+14], recursion=recursion+1)
-                    data = data[6+14:]
-                elif data[2] in [item.value for item in Command] and data[2] != Command.STATUS.value:
-                    self.consumePackage(
-                        data[0:6+expectedDataLength(data)], recursion=recursion+1)
-                    data = data[6+expectedDataLength(data):]
-                else:
-                    # try:
-                    while not isCommand(data[2]):
-                        data = data[1:]
-                        if len(data) < 2:
-                            break
-                    if data[2] != Command.OTHER.value:
-                        if isCommand(data[2]):
-                            self.consumePackage(
-                                data[0:6+expectedDataLength(data)], recursion=recursion+1)
-                        data = data[6+expectedDataLength(data):]
-                    # except:
-                    #    break
-                    #    pass
-
-        return self.__process_command(data)
-
-    def __process_command(self, raw_data):
-        if len(raw_data) < 9:
-            return None
-        cmd = raw_data[2]
-        sub_cmd = raw_data[6]
-        length = raw_data[3]
-        data = raw_data[6:]
-
-        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.TEMPERATURES.value and len(raw_data) == 25:
-            temp = extractTemp(raw_data[9:13])
-            if temp > 0 and temp != self._indoor_in.state:
-                self._indoor_in.setState(round(temp, 1))
-            temp = extractTemp(raw_data[13:17])
-            if temp < 100 and temp != self._outdoor.state:
-                self._outdoor.setState(round(temp, 1))
-            temp = extractTemp(raw_data[17:21])
-            if temp > 0 and temp != self._tempIndoor:
-                self._state = self._attr_state = self._tempIndoor = round(
-                    temp, 1)
-            temp = extractTemp(raw_data[21:25])
-            if temp > 0 and temp != self._house_air_out.state:
-                self._house_air_out.setState(round(temp, 1))
-            return True
-
-        if length == 32 or len(data):
-            _LOGGER.warning("Time left to filter replacement? %s - %s - %s",
-                            sub_cmd, asHex(raw_data), raw_data)
-
-            # and len(raw_data) > 11:
-        if cmd == Command.GET_SET.value and sub_cmd == SubCommand.BYPASS.value:
-            try:
-                heat_recovery = not extractBypass(data)
-                if heat_recovery != self._heat_recovery.state:
-                    self._heat_recovery.setState(heat_recovery)
-                    _LOGGER.warning("bypass state change: open? %s - %s - %s",
-                                    not heat_recovery, asHex(raw_data), raw_data)
-                # self._hass.states.set(
-                #     "binary_sensor.novus300_bypass", extractBypass(data))
-            except:
-                pass
-
-            # _LOGGER.warning("bypass state: %s", raw_data[10])
-            # _LOGGER.warning("defroster state: %s", raw_data[11])
-        elif cmd == Command.GET_SET.value and sub_cmd == SubCommand.TIME_LEFT_TO_FILTER_REPLACEMENT.value:
-            if len(data) > 25:
-                _LOGGER.warning(
-                    "Time left to filter replacement: %s - %s", asHex(data[23:27]), data[23:27])
-        elif cmd == Command.GET_SET.value:
-            _LOGGER.warning(
-                "sub_cmd: %s %s - len(raw_data): %s, len(data): %s - data: %s", asHex(sub_cmd), sub_cmd, len(raw_data), len(data), asHex(raw_data))
-
-        # elif len(data) == 12 and (' '.join('{:02x}'.format(x) for x in data)).startswith('01 00 85 06'):
-        #     value = str(data[-1])
-        #     print(value)
-        #     setAirLevel(value)
-        return None
+        self._state = None
+        # self._attr_icon = icon
+        # self._attr_device_class = DEVICE_CLASS_TEMPERATURE
+        # self._attr_unit_of_measurement = TEMP_CELSIUS
 
     @property
     def name(self):
@@ -394,15 +405,17 @@ class NovusTempSensor(SensorEntity):
     def setState(self, newState):
         self._state = newState
 
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    async def async_update(self):
-        _LOGGER.debug("async_update req: %s", self._attr_unique_id)
-        if self._port is None:
-            return
-        _LOGGER.debug("async_update start: %s", self._attr_unique_id)
-        await self.serial_read(self._port, self._baudrate, timeout=0, stopbits=1  # serial.STOPBITS_ONE
-                               , parity="M"  # serial.PARITY_MARK
-                               , bytesize=8,  # serial.EIGHTBITS
-                               rtscts=False,
-                               dsrdtr=False)
-        _LOGGER.debug("async_update end: %s", self._attr_unique_id)
+
+class NovusTempSensor(NovusSensor):
+    """Representation of a Serial sensor."""
+
+    def __init__(self, hass, id, friendly_name, icon='hass:thermometer'):
+        """Initialize the Serial sensor."""
+        self._hass = hass
+        self._attr_unique_id = self._attr_name = "novus300_temp_" + id
+        self._name = friendly_name
+        self._attr_icon = icon
+        self._state = None
+        # self._attr_should_poll = True  # self._port is not None
+        self._attr_device_class = DEVICE_CLASS_TEMPERATURE
+        self._attr_unit_of_measurement = TEMP_CELSIUS
