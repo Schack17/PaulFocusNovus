@@ -17,5 +17,6 @@ Todo:
 
 * Cleanup code - move read function into global part
 * Remove hardcoded sensors and read them as config
-* Add bypass state as sensor
 * Add filter time as sensor
+* Add project to hacs
+* Add dokumentation how to connect USB RS-485

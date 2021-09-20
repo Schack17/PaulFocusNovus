@@ -1,7 +1,6 @@
 """Support for reading data from a serial port."""
 # region Imports
 import codecs
-# import json
 import logging
 from datetime import timedelta
 from enum import Enum
@@ -9,8 +8,11 @@ from enum import Enum
 import homeassistant.helpers.config_validation as cv
 import serial
 import voluptuous as vol
-from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.const import CONF_NAME
+from homeassistant.components.binary_sensor import (DEVICE_CLASS_PLUG,
+                                                    BinarySensorEntity)
+from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
+from homeassistant.const import (CONF_NAME, DEVICE_CLASS_TEMPERATURE,
+                                 TEMP_CELSIUS)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -72,15 +74,24 @@ async def async_setup_platform(hass: HomeAssistant, config: ConfigType, async_ad
     port = config.get(CONF_SERIAL_PORT)
     baudrate = config.get(CONF_BAUDRATE) or DEFAULT_BAUDRATE
 
-    # bypass_state = NovusTempSensor( hass, "bypass_state", "Zuluft Temperatur Räume")
-    indoor_in = NovusTempSensor(hass, "indoor_in", "Zuluft Temperatur Räume")
-    outdoor = NovusTempSensor(hass, "outdoor", "Außentemperatur Lüftung")
+    heat_recovery = NovusBinarySensor(
+        hass, "heat_recovery", "Wärme Rück Gewinnung")
+    indoor_in = NovusTempSensor(
+        hass, "indoor_in", "Zuluft Temperatur Räume", "mdi:air-purifier")
+    outdoor = NovusTempSensor(
+        hass, "outdoor", "Außentemperatur Lüftung", "mdi:home-import-outline")
     house_air_out = NovusTempSensor(
         hass, "house_air_out", "Abluft Temperatur Haus")
-    indoor = NovusTempSensor(hass, "indoor", name, port,
-                             baudrate, indoor_in, outdoor, house_air_out)
-    entities = [indoor, indoor_in, outdoor, house_air_out]
-    async_add_entities(entities, True)
+    indoor = NovusTempSensor(hass, "indoor", name, "mdi:home-thermometer", port,
+                             baudrate, indoor_in, outdoor, house_air_out, heat_recovery)
+    sensors: dict[str, Entity] = {
+        'heat_recovery': heat_recovery,
+        'indoor': indoor,
+        'indoor_in': indoor_in,
+        'outdoor': outdoor,
+        'house_air_out': house_air_out
+    }
+    async_add_entities(sensors.values(), True)
 
 # region Helper Functions
 
@@ -193,27 +204,58 @@ def asHex(data):
 # endregion Helper Functions
 
 
-class NovusTempSensor(Entity):
+class NovusBinarySensor(BinarySensorEntity):
+    """Representation of a Binary sensor."""
+
+    def __init__(self, hass, id, friendly_name):
+        """Initialize the Serial sensor."""
+        self._hass = hass
+        self._attr_unique_id = self._attr_name = "novus300_" + id
+        self._name = friendly_name
+        self._attr_icon = 'mdi:compare-horizontal'
+        self._is_on = None
+        self._attr_device_class = DEVICE_CLASS_PLUG
+
+    @property
+    def name(self):
+        """Return the name of the sensor."""
+        return self._name
+
+    @property
+    def is_on(self):
+        """Return the state of the sensor."""
+        return self._is_on
+
+    def setState(self, newState):
+        self._is_on = newState
+
+
+class NovusTempSensor(SensorEntity):
     """Representation of a Serial sensor."""
 
-    def __init__(self, hass, id, name, port=None, baudrate=None, indoor_in=None, outdoor=None, house_air_out=None, bypass=None):
+    def __init__(self, hass, id, friendly_name, icon='hass:thermometer', port=None, baudrate=None, indoor_in=None, outdoor=None, house_air_out=None, heat_recovery=None):
         """Initialize the Serial sensor."""
         self._indoor_in = indoor_in
         self._outdoor = outdoor
         self._house_air_out = house_air_out
-        self._bypass = bypass
-        self.entity_id = "sensor.novus300_temp_" + id
+        self._heat_recovery = heat_recovery
+
         self._hass = hass
-        self._name = name
         self._port = port
         self._baudrate = baudrate
         self._serial_loop_task = None
-        self._attributes = []
+
+        self._attr_unique_id = self._attr_name = "novus300_temp_" + id
+        self._name = friendly_name
+        self._attr_icon = icon
         self._state = self._tempIndoor = None
+        self._attr_should_poll = True  # self._port is not None
+        self._attr_device_class = DEVICE_CLASS_TEMPERATURE
+        self._attr_unit_of_measurement = TEMP_CELSIUS
 
     async def serial_read(self, device, rate, **kwargs):
         """Read the data from the port."""
-        _LOGGER.debug("serial_read start: %s", self.entity_id)
+        _LOGGER.debug("serial_read start: %s", self._attr_unique_id)
         reader = serial.Serial(device, baudrate=rate, **kwargs)
         count = 0
         lastdata = None
@@ -245,7 +287,7 @@ class NovusTempSensor(Entity):
                 _LOGGER.error("ValueError: %s", line)
                 pass
         reader.close()
-        _LOGGER.debug("serial_read end: %s", self.entity_id)
+        _LOGGER.debug("serial_read end: %s", self._attr_unique_id)
 
     def consumePackage(self, data, recursion=0):
         if recursion > 10:
@@ -299,7 +341,8 @@ class NovusTempSensor(Entity):
                 self._outdoor.setState(round(temp, 1))
             temp = extractTemp(raw_data[17:21])
             if temp > 0 and temp != self._tempIndoor:
-                self._state = self._tempIndoor = round(temp, 1)
+                self._state = self._attr_state = self._tempIndoor = round(
+                    temp, 1)
             temp = extractTemp(raw_data[21:25])
             if temp > 0 and temp != self._house_air_out.state:
                 self._house_air_out.setState(round(temp, 1))
@@ -312,11 +355,11 @@ class NovusTempSensor(Entity):
             # and len(raw_data) > 11:
         if cmd == Command.GET_SET.value and sub_cmd == SubCommand.BYPASS.value:
             try:
-                bypass = extractBypass(data)
-                if bypass != self._bypass:
-                    self._bypass = bypass
+                heat_recovery = not extractBypass(data)
+                if heat_recovery != self._heat_recovery.state:
+                    self._heat_recovery.setState(heat_recovery)
                     _LOGGER.warning("bypass state change: open? %s - %s - %s",
-                                    bypass, asHex(raw_data), raw_data)
+                                    not heat_recovery, asHex(raw_data), raw_data)
                 # self._hass.states.set(
                 #     "binary_sensor.novus300_bypass", extractBypass(data))
             except:
@@ -339,26 +382,9 @@ class NovusTempSensor(Entity):
         return None
 
     @property
-    def unit_of_measurement(self):
-        return "°C"
-
-    @property
-    def device_class(self):
-        return "temperature"
-
-    @property
     def name(self):
         """Return the name of the sensor."""
         return self._name
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return True  # self._port is not None
-
-    @property
-    def device_state_attributes(self):
-        return self._attributes
 
     @property
     def state(self):
@@ -370,13 +396,13 @@ class NovusTempSensor(Entity):
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     async def async_update(self):
-        _LOGGER.debug("async_update req: %s", self.entity_id)
+        _LOGGER.debug("async_update req: %s", self._attr_unique_id)
         if self._port is None:
             return
-        _LOGGER.debug("async_update start: %s", self.entity_id)
+        _LOGGER.debug("async_update start: %s", self._attr_unique_id)
         await self.serial_read(self._port, self._baudrate, timeout=0, stopbits=1  # serial.STOPBITS_ONE
                                , parity="M"  # serial.PARITY_MARK
                                , bytesize=8,  # serial.EIGHTBITS
                                rtscts=False,
                                dsrdtr=False)
-        _LOGGER.debug("async_update end: %s", self.entity_id)
+        _LOGGER.debug("async_update end: %s", self._attr_unique_id)
